@@ -10,24 +10,24 @@ namespace System.Buffers
     public readonly partial struct ReadOnlyBuffer<T>
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static bool TryGetBuffer(Position begin, Position end, out ReadOnlyMemory<T> data, out Position next)
+        internal static bool TryGetBuffer(Position start, Position end, out ReadOnlyMemory<T> data, out Position next)
         {
-            var segment = begin.Segment;
+            var startIndex = start.Index;
+            var endIndex = end.Index;
+            var type = GetType(startIndex, endIndex);
 
-            switch (segment)
+            startIndex = GetIndex(startIndex);
+            endIndex = GetIndex(endIndex);
+
+            switch (type)
             {
-                case null:
-                    data = default;
-                    next = default;
-                    return false;
+                case BufferType.MemoryList:
+                    var bufferSegment = (IBufferList<T>) start.Segment;
+                    var currentEndIndex = bufferSegment.Memory.Length;
 
-                case IBufferList<T> bufferSegment:
-                    var startIndex = begin.Index;
-                    var endIndex = bufferSegment.Memory.Length;
-
-                    if (segment == end.Segment)
+                    if (bufferSegment == end.Segment)
                     {
-                        endIndex = end.Index;
+                        currentEndIndex = endIndex;
                         next = default;
                     }
                     else
@@ -48,15 +48,16 @@ namespace System.Buffers
                         }
                     }
 
-                    data = bufferSegment.Memory.Slice(startIndex, endIndex - startIndex);
+                    data = bufferSegment.Memory.Slice(startIndex, currentEndIndex - startIndex);
 
                     return true;
 
 
-                case OwnedMemory<T> ownedMemory:
-                    data = ownedMemory.Memory.Slice(begin.Index, end.Index - begin.Index);
+                case BufferType.OwnedMemory:
+                    var ownedMemory = (OwnedMemory<T>) start.Segment;
+                    data = ownedMemory.Memory.Slice(startIndex, endIndex - startIndex);
 
-                    if (segment != end.Segment)
+                    if (ownedMemory != end.Segment)
                     {
                         ThrowHelper.ThrowInvalidOperationException(ExceptionResource.EndCursorNotReached);
                     }
@@ -64,13 +65,15 @@ namespace System.Buffers
                     next = default;
                     return true;
 
-                case T[] array:
-                    data = new Memory<T>(array, begin.Index, end.Index - begin.Index);
+                case BufferType.Array:
+                    var array = (T[]) start.Segment;
+                    data = new Memory<T>(array, startIndex, endIndex - startIndex);
 
-                    if (segment != end.Segment)
+                    if (array != end.Segment)
                     {
                         ThrowHelper.ThrowInvalidOperationException(ExceptionResource.EndCursorNotReached);
                     }
+
                     next = default;
                     return true;
             }
@@ -81,57 +84,79 @@ namespace System.Buffers
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static Position Seek(Position begin, Position end, int bytes, bool checkEndReachable = true)
+        internal static Position Seek(Position start, Position end, int bytes, bool checkEndReachable = true)
         {
-            Position cursor;
-            if (begin.Segment == end.Segment && end.Index - begin.Index >= bytes)
+            var startIndex = start.Index;
+            var endIndex = end.Index;
+            var type = GetType(startIndex, endIndex);
+
+            startIndex = GetIndex(startIndex);
+            endIndex = GetIndex(endIndex);
+
+            if (start.Segment == end.Segment && endIndex - startIndex >= bytes)
             {
-                cursor = new Position(begin.Segment, begin.Index + bytes);
-            }
-            else
-            {
-                cursor = SeekMultiSegment(begin, end, bytes, checkEndReachable);
+                return new Position(start.Segment, startIndex + bytes);
             }
 
-            return cursor;
+            if (type == BufferType.MemoryList)
+            {
+                return SeekMultiSegment((IBufferList<byte>) start.Segment, startIndex, (IBufferList<byte>) end.Segment, endIndex, bytes, checkEndReachable);
+            }
+
+            ThrowHelper.ThrowInvalidOperationException(ExceptionResource.EndCursorNotReached);
+            return default;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static Position Seek(Position begin, Position end, long bytes, bool checkEndReachable = true)
+        internal static Position Seek(Position start, Position end, long bytes, bool checkEndReachable = true)
         {
-            Position cursor;
-            if (begin.Segment == end.Segment && end.Index - begin.Index >= bytes)
+            var startIndex = start.Index;
+            var endIndex = end.Index;
+            var type = GetType(startIndex, endIndex);
+
+            startIndex = GetIndex(startIndex);
+            endIndex = GetIndex(endIndex);
+
+            if (start.Segment == end.Segment && endIndex - startIndex >= bytes)
             {
                 // end.Index >= bytes + Index and end.Index is int
-                cursor = new Position(begin.Segment, begin.Index + (int)bytes);
-            }
-            else
-            {
-                cursor = SeekMultiSegment(begin, end, bytes, checkEndReachable);
+                return new Position(start.Segment, startIndex + (int)bytes);
             }
 
-            return cursor;
+            if (type == BufferType.MemoryList)
+            {
+                return SeekMultiSegment((IBufferList<byte>) start.Segment, startIndex, (IBufferList<byte>) end.Segment, endIndex, bytes, checkEndReachable);
+            }
+
+            ThrowHelper.ThrowInvalidOperationException(ExceptionResource.EndCursorNotReached);
+            return default;
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        private static Position SeekMultiSegment(Position begin, Position end, long bytes, bool checkEndReachable)
+        private static Position SeekMultiSegment(IBufferList<byte> start, int startIndex, IBufferList<byte> end, int endPosition, long bytes, bool checkEndReachable)
         {
             Position result = default;
             var foundResult = false;
-            var current = begin;
-            while (TryGetBuffer(begin, end, out var memory, out begin))
+            var current = start;
+            var currentIndex = startIndex;
+
+            while (current != null)
             {
                 // We need to loop up until the end to make sure start and end are connected
                 // if end is not trusted
                 if (!foundResult)
                 {
+                    var memory = current.Memory;
+                    var currentEnd = current == end ? endPosition : memory.Length;
+
+                    memory = memory.Slice(0, currentEnd - currentIndex);
                     // We would prefer to put cursor in the beginning of next segment
                     // then past the end of previous one, but only if next exists
 
                     if (memory.Length > bytes ||
-                       (memory.Length == bytes && begin.Segment == null))
+                       (memory.Length == bytes && current == null))
                     {
-                        result = new Position(current.Segment, current.Index + (int)bytes);
+                        result = new Position(current, currentIndex + (int)bytes);
                         foundResult = true;
                         if (!checkEndReachable)
                         {
@@ -141,7 +166,9 @@ namespace System.Buffers
 
                     bytes -= memory.Length;
                 }
-                current = begin;
+
+                current = current.Next;
+                currentIndex = 0;
             }
 
             if (!foundResult)
@@ -153,21 +180,23 @@ namespace System.Buffers
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static long GetLength(Position begin, Position end)
+        private static long GetLength(Position start, Position end)
         {
-            if (begin.Segment == null)
-            {
-                return 0;
-            }
+            var startIndex = start.Index;
+            var endIndex = end.Index;
+            var type = GetType(startIndex, endIndex);
 
-            var segment = begin.Segment;
-            switch (segment)
+            startIndex = GetIndex(startIndex);
+            endIndex = GetIndex(endIndex);
+
+            switch (type)
             {
-                case IBufferList<T> bufferSegment:
-                    return GetLength(bufferSegment, begin.Index, (IBufferList<T>)end.Segment, end.Index);
-                case T[] _:
-                case OwnedMemory<T> _:
-                    return end.Index - begin.Index;
+                case BufferType.MemoryList:
+                    return GetLength((IBufferList<T>) start.Segment, startIndex, (IBufferList<T>)end.Segment, endIndex);
+
+                case BufferType.OwnedMemory:
+                case BufferType.Array:
+                    return endIndex - startIndex;
             }
 
             ThrowHelper.ThrowInvalidOperationException(ExceptionResource.UnexpectedSegmentType);
