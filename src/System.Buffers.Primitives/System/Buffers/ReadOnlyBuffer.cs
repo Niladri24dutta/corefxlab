@@ -20,9 +20,9 @@ namespace System.Buffers
         internal const int MemoryListEndMask = 0;
 
         internal const int ArrayStartMask = 0;
-        internal const int ArrayEndMask = 0x8000000;
+        internal const int ArrayEndMask = 1 << 31;
 
-        internal const int OwnedMemoryStartMask = 0x8000000;
+        internal const int OwnedMemoryStartMask = 1 << 31;
         internal const int OwnedMemoryEndMask = 0;
 
         internal readonly Position BufferStart;
@@ -403,16 +403,16 @@ namespace System.Buffers
         {
             return new ReadOnlyBuffer<T>(
                 begin.Segment,
-                begin.Index | (Start.Index & IndexBitMask),
+                begin.Index | (Start.Index & ~IndexBitMask),
                 end.Segment,
-                end.Index | (End.Index & IndexBitMask)
+                end.Index | (End.Index & ~IndexBitMask)
             );
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static BufferType GetType(int start, int end)
         {
-            return (BufferType)(start >> 30 & end >> 31);
+            return (BufferType)((((uint)start >> 30) & 2) | (uint)end >> 31);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

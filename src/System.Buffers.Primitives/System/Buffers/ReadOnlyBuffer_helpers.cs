@@ -12,6 +12,13 @@ namespace System.Buffers
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static bool TryGetBuffer(Position start, Position end, out ReadOnlyMemory<T> data, out Position next)
         {
+            if (start.Segment == null)
+            {
+                data = default;
+                next = default;
+                return false;
+            }
+
             var startIndex = start.Index;
             var endIndex = end.Index;
             var type = GetType(startIndex, endIndex);
@@ -154,7 +161,7 @@ namespace System.Buffers
                     // then past the end of previous one, but only if next exists
 
                     if (memory.Length > bytes ||
-                       (memory.Length == bytes && current == null))
+                       (memory.Length == bytes && current.Next == null))
                     {
                         result = new Position(current, currentIndex + (int)bytes);
                         foundResult = true;
@@ -221,20 +228,29 @@ namespace System.Buffers
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void BoundsCheck(Position end, Position newCursor)
+        private static void BoundsCheck(Position start, Position newCursor)
         {
-            switch (end.Segment)
+            var startIndex = start.Index;
+            var endIndex = newCursor.Index;
+            var type = GetType(startIndex, endIndex);
+
+            startIndex = GetIndex(startIndex);
+            endIndex = GetIndex(endIndex);
+
+            switch (type)
             {
-                case byte[] _:
-                case OwnedMemory<byte> _:
-                    if (newCursor.Index > end.Index)
+                case BufferType.OwnedMemory:
+                case BufferType.Array:
+                    if (endIndex > startIndex)
                     {
                         ThrowHelper.ThrowCursorOutOfBoundsException();
                     }
                     return;
-                case IBufferList<T> memoryList:
+                case BufferType.MemoryList:
                     var segment = (IBufferList<T>)newCursor.Segment;
-                    if (segment.RunningLength - end.Index > memoryList.RunningLength - newCursor.Index)
+                    var memoryList = (IBufferList<T>) start.Segment;
+
+                    if (segment.RunningLength - endIndex > memoryList.RunningLength - endIndex)
                     {
                         ThrowHelper.ThrowCursorOutOfBoundsException();
                     }
