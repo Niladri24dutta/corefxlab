@@ -410,9 +410,9 @@ namespace System.Buffers
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static BufferType GetType(int start, int end)
+        private  BufferType GetBufferType()
         {
-            return (BufferType)((((uint)start >> 30) & 2) | (uint)end >> 31);
+            return (BufferType)((((uint)Start.Index >> 30) & 2) | (uint)End.Index >> 31);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
